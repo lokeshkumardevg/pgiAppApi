@@ -260,4 +260,39 @@ export class ProspectsService {
     }
     return { success: true };
   }
+
+  async exportCsv(associateName?: string): Promise<string> {
+    const filter: any = {};
+    if (associateName && associateName !== 'All') {
+      filter.associateName = new RegExp(`^${associateName.trim()}$`, 'i');
+    }
+    const leads = await this.prospectModel.find(filter).sort({ createdAt: -1 }).exec();
+    const headers = [
+      'Client Name',
+      'Contact',
+      'Email',
+      'Lead Type',
+      'Status',
+      'Project',
+      'Budget',
+      'Assigned Associate',
+      'Address',
+      'Due Date',
+      'Created At',
+    ];
+    const rows = leads.map((l) => [
+      `"${(l.clientName || '').replace(/"/g, '""')}"`,
+      `"${(l.contact || '').replace(/"/g, '""')}"`,
+      `"${(l.email || '').replace(/"/g, '""')}"`,
+      `"${(l.type || '').replace(/"/g, '""')}"`,
+      `"${(l.status || '').replace(/"/g, '""')}"`,
+      `"${(l.project || '').replace(/"/g, '""')}"`,
+      `"${(l.budget || '').replace(/"/g, '""')}"`,
+      `"${(l.associateName || '').replace(/"/g, '""')}"`,
+      `"${(l.address || '').replace(/"/g, '""')}"`,
+      `"${(l.dueDate || '').replace(/"/g, '""')}"`,
+      `"${(l as any).createdAt ? new Date((l as any).createdAt).toLocaleDateString() : ''}"`,
+    ]);
+    return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+  }
 }
