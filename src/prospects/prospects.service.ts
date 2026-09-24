@@ -1,0 +1,263 @@
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Prospect, ProspectDocument } from './schemas/prospect.schema';
+import { UserMember, UserMemberDocument } from '../rbac/schemas/rbac.schema';
+import { CreateProspectDto } from './dto/create-prospect.dto';
+import { UpdateProspectDto } from './dto/update-prospect.dto';
+
+@Injectable()
+export class ProspectsService {
+  constructor(
+    @InjectModel(Prospect.name) private prospectModel: Model<ProspectDocument>,
+    @InjectModel(UserMember.name) private userMemberModel: Model<UserMemberDocument>,
+  ) {}
+
+  async findAll(query: {
+    type?: string;
+    search?: string;
+    project?: string;
+    status?: string;
+    dueDate?: string;
+    associateName?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{ data: Prospect[]; total: number; page: number; totalPages: number }> {
+    const andClauses: any[] = [];
+
+    if (query.type && query.type !== 'All') {
+      andClauses.push({ type: query.type });
+    }
+
+    if (query.status && query.status !== 'All') {
+      andClauses.push({ status: query.status });
+    }
+
+    if (query.associateName && query.associateName !== 'All') {
+      if (query.associateName === 'Unassigned') {
+        andClauses.push({
+          $or: [
+            { associateName: { $exists: false } },
+            { associateName: '' },
+            { associateName: '0' },
+          ],
+        });
+      } else if (query.associateName.toLowerCase() === 'vibha') {
+        andClauses.push({ associateName: new RegExp('^vibha', 'i') });
+      } else {
+        andClauses.push({ associateName: new RegExp(`^${query.associateName.trim()}$`, 'i') });
+      }
+    }
+
+    if (query.project) {
+      andClauses.push({ project: new RegExp(query.project, 'i') });
+    }
+
+    if (query.dueDate) {
+      andClauses.push({ dueDate: new RegExp(query.dueDate, 'i') });
+    }
+
+    if (query.search) {
+      const searchRegex = new RegExp(query.search, 'i');
+      andClauses.push({
+        $or: [
+          { clientName: searchRegex },
+          { contact: searchRegex },
+          { project: searchRegex },
+          { associateName: searchRegex },
+        ],
+      });
+    }
+
+    const filter = andClauses.length > 0 ? { $and: andClauses } : {};
+
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 50));
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prospectModel.find(filter).sort({ updatedAt: -1 }).skip(skip).limit(limit).exec(),
+      this.prospectModel.countDocuments(filter).exec(),
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async getAssociates(): Promise<Array<{ name: string; leadCount: number; hotCount: number; convertedCount: number; role?: string }>> {
+    const aggregation = await this.prospectModel.aggregate([
+      {
+        $group: {
+          _id: '$associateName',
+          total: { $sum: 1 },
+          hot: { $sum: { $cond: [{ $eq: ['$type', 'Hot'] }, 1, 0] } },
+          converted: { $sum: { $cond: [{ $eq: ['$status', 'Converted'] }, 1, 0] } },
+        },
+      },
+      { $sort: { total: -1 } },
+    ]);
+
+    const results: Array<{ name: string; leadCount: number; hotCount: number; convertedCount: number; role?: string }> = [];
+    const seen = new Set<string>();
+
+    for (const item of aggregation) {
+      let rawName = (item._id || '').trim();
+      if (!rawName || rawName === '0') continue;
+      // Normalise e.g. "vibha(kirti)" -> "Vibha"
+      let cleanName = rawName;
+      if (/^vibha/i.test(cleanName)) cleanName = 'Vibha';
+      if (!seen.has(cleanName.toLowerCase())) {
+        seen.add(cleanName.toLowerCase());
+        results.push({
+          name: cleanName,
+          leadCount: item.total,
+          hotCount: item.hot,
+          convertedCount: item.converted,
+        });
+      } else {
+        const found = results.find((r) => r.name.toLowerCase() === cleanName.toLowerCase());
+        if (found) {
+          found.leadCount += item.total;
+          found.hotCount += item.hot;
+          found.convertedCount += item.converted;
+        }
+      }
+    }
+
+    // Include all active users from RBAC UserMember collection
+    try {
+      if (this.userMemberModel) {
+        const activeUsers = await this.userMemberModel.find({ status: 'Active' }).exec();
+        for (const user of activeUsers) {
+          if (!user.name) continue;
+          const uName = user.name.trim();
+          const existing = results.find((r) => r.name.toLowerCase() === uName.toLowerCase());
+          if (existing) {
+            existing.role = user.role;
+          } else {
+            seen.add(uName.toLowerCase());
+            results.push({
+              name: uName,
+              role: user.role,
+              leadCount: 0,
+              hotCount: 0,
+              convertedCount: 0,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to query RBAC users in getAssociates:', err);
+    }
+
+    return results;
+  }
+
+  async assign(id: string, associateName: string, assignedBy = 'Admin'): Promise<Prospect> {
+    const prospect = await this.prospectModel.findById(id).exec();
+    if (!prospect) {
+      throw new NotFoundException(`Prospect with ID ${id} not found`);
+    }
+
+    const previousAssociate = prospect.associateName || 'Unassigned';
+    prospect.associateName = associateName;
+    prospect.remarks.unshift({
+      note: `Assigned to ${associateName} (previously: ${previousAssociate}) by ${assignedBy}`,
+      date: new Date().toISOString().split('T')[0],
+      updatedBy: assignedBy,
+    });
+
+    return prospect.save();
+  }
+
+  async bulkAssign(ids: string[], associateName: string, assignedBy = 'Admin'): Promise<{ modifiedCount: number }> {
+    const today = new Date().toISOString().split('T')[0];
+    const auditRemark = {
+      note: `Bulk assigned to ${associateName} by ${assignedBy}`,
+      date: today,
+      updatedBy: assignedBy,
+    };
+
+    const res = await this.prospectModel.updateMany(
+      { _id: { $in: ids } },
+      {
+        $set: { associateName },
+        $push: { remarks: { $each: [auditRemark], $position: 0 } },
+      },
+    );
+
+    return { modifiedCount: res.modifiedCount };
+  }
+
+  async findOne(id: string): Promise<Prospect> {
+    const prospect = await this.prospectModel.findById(id).exec();
+    if (!prospect) {
+      throw new NotFoundException(`Prospect with ID ${id} not found`);
+    }
+    return prospect;
+  }
+
+  async create(createDto: CreateProspectDto): Promise<Prospect> {
+    const remarks = [];
+    if (createDto.initialRemark) {
+      remarks.push({
+        note: createDto.initialRemark,
+        date: new Date().toISOString().split('T')[0],
+        updatedBy: createDto.associateName || 'Agent',
+      });
+    }
+
+    const created = new this.prospectModel({
+      ...createDto,
+      remarks,
+    });
+    return created.save();
+  }
+
+  async update(id: string, updateDto: UpdateProspectDto): Promise<Prospect> {
+    const prospect = await this.prospectModel.findById(id).exec();
+    if (!prospect) {
+      throw new NotFoundException(`Prospect with ID ${id} not found`);
+    }
+
+    if (updateDto.newRemark) {
+      prospect.remarks.unshift({
+        note: updateDto.newRemark,
+        date: new Date().toISOString().split('T')[0],
+        updatedBy: 'Agent',
+      });
+    }
+
+    Object.assign(prospect, updateDto);
+    delete (prospect as any).newRemark;
+
+    return prospect.save();
+  }
+
+  async addRemark(id: string, note: string, updatedBy = 'Agent'): Promise<Prospect> {
+    const prospect = await this.prospectModel.findById(id).exec();
+    if (!prospect) {
+      throw new NotFoundException(`Prospect with ID ${id} not found`);
+    }
+
+    prospect.remarks.unshift({
+      note,
+      date: new Date().toISOString().split('T')[0],
+      updatedBy,
+    });
+
+    return prospect.save();
+  }
+
+  async delete(id: string): Promise<{ success: boolean }> {
+    const res = await this.prospectModel.findByIdAndDelete(id).exec();
+    if (!res) {
+      throw new NotFoundException(`Prospect with ID ${id} not found`);
+    }
+    return { success: true };
+  }
+}
