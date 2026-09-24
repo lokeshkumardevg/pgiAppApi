@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Res } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, Query } from '@nestjs/common';
 import { ProspectsService } from './prospects.service';
 import { CreateProspectDto } from './dto/create-prospect.dto';
 import { UpdateProspectDto } from './dto/update-prospect.dto';
@@ -6,14 +6,6 @@ import { UpdateProspectDto } from './dto/update-prospect.dto';
 @Controller('prospects')
 export class ProspectsController {
   constructor(private readonly prospectsService: ProspectsService) {}
-
-  @Get('export/csv')
-  async exportCsv(@Res() res: any, @Query('associate') associate?: string) {
-    const csv = await this.prospectsService.exportCsv(associate);
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="leads_export.csv"');
-    return res.send(csv);
-  }
 
   @Get()
   async findAll(@Query() query: any) {
