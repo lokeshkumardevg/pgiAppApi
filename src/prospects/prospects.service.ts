@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import * as XLSX from 'xlsx';
 import { Prospect, ProspectDocument } from './schemas/prospect.schema';
 import { UserMember, UserMemberDocument } from '../rbac/schemas/rbac.schema';
 import { CreateProspectDto } from './dto/create-prospect.dto';
@@ -356,5 +357,20 @@ export class ProspectsService {
       imported: inserted,
       skipped,
     };
+  }
+
+  async importFromFile(
+    fileBuffer: Buffer,
+    defaultAssociate = 'Vibha',
+    importedBy = 'Admin',
+  ): Promise<{ success: boolean; count: number; imported: any[]; skipped: number }> {
+    const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+    const firstSheetName = workbook.SheetNames[0];
+    if (!firstSheetName) {
+      throw new BadRequestException('The uploaded Excel or CSV file contains no readable sheets.');
+    }
+    const worksheet = workbook.Sheets[firstSheetName];
+    const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+    return this.bulkImport(jsonData, defaultAssociate, importedBy);
   }
 }

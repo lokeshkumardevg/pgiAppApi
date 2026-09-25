@@ -1,4 +1,18 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, Res } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Patch,
+  Delete,
+  Body,
+  Param,
+  Query,
+  Res,
+  UseInterceptors,
+  UploadedFile,
+  BadRequestException,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ProspectsService } from './prospects.service';
 import { CreateProspectDto } from './dto/create-prospect.dto';
 import { UpdateProspectDto } from './dto/update-prospect.dto';
@@ -18,6 +32,19 @@ export class ProspectsController {
   @Post('import')
   async bulkImport(@Body() body: { leads: any[]; defaultAssociate?: string; importedBy?: string }) {
     return this.prospectsService.bulkImport(body.leads, body.defaultAssociate, body.importedBy);
+  }
+
+  @Post('import-file')
+  @UseInterceptors(FileInterceptor('file'))
+  async importFile(
+    @UploadedFile() file: any,
+    @Body('defaultAssociate') defaultAssociate?: string,
+    @Body('importedBy') importedBy?: string,
+  ) {
+    if (!file || !file.buffer) {
+      throw new BadRequestException('Please attach an Excel (.xlsx, .xls) or CSV (.csv) file.');
+    }
+    return this.prospectsService.importFromFile(file.buffer, defaultAssociate, importedBy);
   }
 
   @Get()
