@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import * as XLSX from 'xlsx';
 import { Prospect, ProspectDocument } from './schemas/prospect.schema';
 import { UserMember, UserMemberDocument } from '../rbac/schemas/rbac.schema';
 import { CreateProspectDto } from './dto/create-prospect.dto';
@@ -259,5 +260,168 @@ export class ProspectsService {
       throw new NotFoundException(`Prospect with ID ${id} not found`);
     }
     return { success: true };
+  }
+
+  async exportCsv(associateName?: string): Promise<string> {
+    const filter: any = {};
+    if (associateName && associateName !== 'All') {
+      filter.associateName = new RegExp(`^${associateName.trim()}$`, 'i');
+    }
+    const leads = await this.prospectModel.find(filter).sort({ createdAt: -1 }).exec();
+    const headers = [
+      'Client Name',
+      'Contact',
+      'Email',
+      'Lead Type',
+      'Status',
+      'Project',
+      'Budget',
+      'Assigned Associate',
+      'Address',
+      'Due Date',
+      'Created At',
+    ];
+    const rows = leads.map((l) => [
+      `"${(l.clientName || '').replace(/"/g, '""')}"`,
+      `"${(l.contact || '').replace(/"/g, '""')}"`,
+      `"${(l.email || '').replace(/"/g, '""')}"`,
+      `"${(l.type || '').replace(/"/g, '""')}"`,
+      `"${(l.status || '').replace(/"/g, '""')}"`,
+      `"${(l.project || '').replace(/"/g, '""')}"`,
+      `"${(l.budget || '').replace(/"/g, '""')}"`,
+      `"${(l.associateName || '').replace(/"/g, '""')}"`,
+      `"${(l.address || '').replace(/"/g, '""')}"`,
+      `"${(l.dueDate || '').replace(/"/g, '""')}"`,
+      `"${(l as any).createdAt ? new Date((l as any).createdAt).toLocaleDateString() : ''}"`,
+    ]);
+    return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+  }
+
+  async bulkImport(
+    leads: any[],
+    defaultAssociate = 'Vibha',
+    importedBy = 'Admin',
+  ): Promise<{ success: boolean; count: number; imported: any[]; skipped: number }> {
+    if (!Array.isArray(leads) || leads.length === 0) {
+      return { success: false, count: 0, imported: [], skipped: 0 };
+    }
+
+    const validLeads: any[] = [];
+    let skipped = 0;
+
+    const getField = (row: Record<string, any>, keys: string[]): string => {
+      for (const k of keys) {
+        if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') {
+          return String(row[k]).trim();
+        }
+      }
+      const rowKeys = Object.keys(row);
+      for (const target of keys) {
+        const normTarget = target.toLowerCase().replace(/[^a-z0-9]/g, '');
+        for (const k of rowKeys) {
+          const normK = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (normK === normTarget && row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== '') {
+            return String(row[k]).trim();
+          }
+        }
+      }
+      return '';
+    };
+
+    for (const item of leads) {
+      if (typeof item !== 'object' || !item) {
+        skipped++;
+        continue;
+      }
+
+      const name = getField(item, [
+        'clientName', 'client_name', 'name', 'fullName', 'full_name',
+        'Client Name', 'Name', 'Customer Name', 'Customer', 'Lead Name', 'Buyer Name'
+      ]);
+
+      const phone = getField(item, [
+        'contact', 'phone', 'mobile', 'phoneNumber', 'phone_number', 'contact_no', 'mobile_no',
+        'Contact', 'Phone', 'Mobile', 'Contact Number', 'Phone Number', 'Mobile Number', 'Mobile No'
+      ]);
+
+      if (!name && !phone) {
+        skipped++;
+        continue;
+      }
+
+      const clientName = name || `Lead ${phone.slice(-4) || 'New'}`;
+      const contact = phone || 'N/A';
+      const email = getField(item, ['email', 'email_id', 'Email', 'Email ID', 'Email Address', 'Mail']);
+      const project = getField(item, ['project', 'property', 'project_name', 'Project', 'Property', 'Project Name', 'Interested In', 'Society']);
+      const budget = getField(item, ['budget', 'price', 'budget_range', 'Budget', 'Price', 'Budget Range', 'Cost']);
+      const rawStatus = getField(item, ['status', 'lead_status', 'Status', 'Lead Status', 'Stage']);
+      const rawType = getField(item, ['type', 'lead_type', 'Lead Type', 'Category']);
+
+      const validTypes = ['Hot', 'Warm', 'Cold', 'Not Interested'];
+      const validStatuses = ['Active', 'Converted', 'Dropped', 'Pending'];
+      const matchIn = (val: string, list: string[]) => list.find(x => x.toLowerCase() === val.toLowerCase());
+
+      let type = 'Hot';
+      let status = 'Active';
+
+      if (rawType && matchIn(rawType, validTypes)) {
+        type = matchIn(rawType, validTypes)!;
+      } else if (rawStatus && matchIn(rawStatus, validTypes)) {
+        type = matchIn(rawStatus, validTypes)!;
+      }
+
+      if (rawStatus && matchIn(rawStatus, validStatuses)) {
+        status = matchIn(rawStatus, validStatuses)!;
+      } else if (rawType && matchIn(rawType, validStatuses)) {
+        status = matchIn(rawType, validStatuses)!;
+      }
+
+      const associateName = getField(item, ['associateName', 'associate', 'assigned_to', 'assigned_associate', 'Assigned Associate', 'Assigned To', 'Associate', 'Agent', 'Executive']) || defaultAssociate || 'Vibha';
+      const address = getField(item, ['address', 'location', 'city', 'area', 'Address', 'Location', 'City', 'Area']);
+      const occupation = getField(item, ['occupation', 'profession', 'Occupation', 'Profession', 'Designation']);
+      const notes = getField(item, ['notes', 'remarks', 'remark', 'comment', 'comments', 'Notes', 'Remarks', 'Remark', 'Comments']);
+
+      validLeads.push({
+        clientName,
+        contact,
+        email,
+        project,
+        budget,
+        status,
+        type,
+        associateName,
+        address,
+        occupation,
+        date: new Date().toISOString().split('T')[0],
+        remarks: notes ? [{ note: notes, date: new Date().toISOString().split('T')[0], updatedBy: importedBy }] : [],
+      });
+    }
+
+    if (validLeads.length === 0) {
+      return { success: false, count: 0, imported: [], skipped };
+    }
+
+    const inserted = await this.prospectModel.insertMany(validLeads);
+    return {
+      success: true,
+      count: inserted.length,
+      imported: inserted,
+      skipped,
+    };
+  }
+
+  async importFromFile(
+    fileBuffer: Buffer,
+    defaultAssociate = 'Vibha',
+    importedBy = 'Admin',
+  ): Promise<{ success: boolean; count: number; imported: any[]; skipped: number }> {
+    const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+    const firstSheetName = workbook.SheetNames[0];
+    if (!firstSheetName) {
+      throw new BadRequestException('The uploaded Excel or CSV file contains no readable sheets.');
+    }
+    const worksheet = workbook.Sheets[firstSheetName];
+    const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+    return this.bulkImport(jsonData, defaultAssociate, importedBy);
   }
 }
