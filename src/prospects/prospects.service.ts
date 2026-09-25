@@ -295,4 +295,66 @@ export class ProspectsService {
     ]);
     return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
   }
+
+  async bulkImport(
+    leads: any[],
+    defaultAssociate = 'Vibha',
+    importedBy = 'Admin',
+  ): Promise<{ success: boolean; count: number; imported: any[]; skipped: number }> {
+    if (!Array.isArray(leads) || leads.length === 0) {
+      return { success: false, count: 0, imported: [], skipped: 0 };
+    }
+
+    const validLeads: any[] = [];
+    let skipped = 0;
+
+    for (const item of leads) {
+      const name = (item.clientName || item.name || item.fullName || item['Client Name'] || item['Name'] || '').trim();
+      const phone = (item.contact || item.phone || item.mobile || item['Contact'] || item['Phone'] || item['Mobile'] || '').trim();
+
+      if (!name && !phone) {
+        skipped++;
+        continue;
+      }
+
+      const clientName = name || `Lead ${phone.slice(-4) || 'New'}`;
+      const contact = phone || 'N/A';
+      const email = (item.email || item['Email'] || '').trim();
+      const project = (item.project || item['Project'] || item.property || '').trim();
+      const budget = (item.budget || item['Budget'] || '').trim();
+      const status = (item.status || item['Status'] || 'Hot').trim();
+      const type = (item.type || item['Lead Type'] || 'Hot').trim();
+      const associateName = (item.associateName || item.associate || item['Assigned Associate'] || defaultAssociate || 'Vibha').trim();
+      const address = (item.address || item['Address'] || item.city || '').trim();
+      const occupation = (item.occupation || item['Occupation'] || '').trim();
+      const notes = (item.notes || item.remarks || item.remark || item['Notes'] || '').trim();
+
+      validLeads.push({
+        clientName,
+        contact,
+        email,
+        project,
+        budget,
+        status,
+        type,
+        associateName,
+        address,
+        occupation,
+        date: new Date().toISOString().split('T')[0],
+        remarks: notes ? [{ note: notes, date: new Date().toISOString().split('T')[0], updatedBy: importedBy }] : [],
+      });
+    }
+
+    if (validLeads.length === 0) {
+      return { success: false, count: 0, imported: [], skipped };
+    }
+
+    const inserted = await this.prospectModel.insertMany(validLeads);
+    return {
+      success: true,
+      count: inserted.length,
+      imported: inserted,
+      skipped,
+    };
+  }
 }

@@ -15,6 +15,11 @@ export class ProspectsController {
     return res.send(csv);
   }
 
+  @Post('import')
+  async bulkImport(@Body() body: { leads: any[]; defaultAssociate?: string; importedBy?: string }) {
+    return this.prospectsService.bulkImport(body.leads, body.defaultAssociate, body.importedBy);
+  }
+
   @Get()
   async findAll(@Query() query: any) {
     return this.prospectsService.findAll(query);
