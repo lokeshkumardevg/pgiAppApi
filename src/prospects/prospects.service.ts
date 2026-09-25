@@ -1,7 +1,6 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import * as XLSX from 'xlsx';
 import { Prospect, ProspectDocument } from './schemas/prospect.schema';
 import { UserMember, UserMemberDocument } from '../rbac/schemas/rbac.schema';
 import { CreateProspectDto } from './dto/create-prospect.dto';
@@ -260,117 +259,5 @@ export class ProspectsService {
       throw new NotFoundException(`Prospect with ID ${id} not found`);
     }
     return { success: true };
-  }
-
-  async exportCsv(associateName?: string): Promise<string> {
-    const filter: any = {};
-    if (associateName && associateName !== 'All') {
-      filter.associateName = new RegExp(`^${associateName.trim()}$`, 'i');
-    }
-    const leads = await this.prospectModel.find(filter).sort({ createdAt: -1 }).exec();
-    const headers = [
-      'Client Name',
-      'Contact',
-      'Email',
-      'Lead Type',
-      'Status',
-      'Project',
-      'Budget',
-      'Assigned Associate',
-      'Address',
-      'Due Date',
-      'Created At',
-    ];
-    const rows = leads.map((l) => [
-      `"${(l.clientName || '').replace(/"/g, '""')}"`,
-      `"${(l.contact || '').replace(/"/g, '""')}"`,
-      `"${(l.email || '').replace(/"/g, '""')}"`,
-      `"${(l.type || '').replace(/"/g, '""')}"`,
-      `"${(l.status || '').replace(/"/g, '""')}"`,
-      `"${(l.project || '').replace(/"/g, '""')}"`,
-      `"${(l.budget || '').replace(/"/g, '""')}"`,
-      `"${(l.associateName || '').replace(/"/g, '""')}"`,
-      `"${(l.address || '').replace(/"/g, '""')}"`,
-      `"${(l.dueDate || '').replace(/"/g, '""')}"`,
-      `"${(l as any).createdAt ? new Date((l as any).createdAt).toLocaleDateString() : ''}"`,
-    ]);
-    return [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-  }
-
-  async bulkImport(
-    leads: any[],
-    defaultAssociate = 'Vibha',
-    importedBy = 'Admin',
-  ): Promise<{ success: boolean; count: number; imported: any[]; skipped: number }> {
-    if (!Array.isArray(leads) || leads.length === 0) {
-      return { success: false, count: 0, imported: [], skipped: 0 };
-    }
-
-    const validLeads: any[] = [];
-    let skipped = 0;
-
-    for (const item of leads) {
-      const name = (item.clientName || item.name || item.fullName || item['Client Name'] || item['Name'] || '').trim();
-      const phone = (item.contact || item.phone || item.mobile || item['Contact'] || item['Phone'] || item['Mobile'] || '').trim();
-
-      if (!name && !phone) {
-        skipped++;
-        continue;
-      }
-
-      const clientName = name || `Lead ${phone.slice(-4) || 'New'}`;
-      const contact = phone || 'N/A';
-      const email = (item.email || item['Email'] || '').trim();
-      const project = (item.project || item['Project'] || item.property || '').trim();
-      const budget = (item.budget || item['Budget'] || '').trim();
-      const status = (item.status || item['Status'] || 'Hot').trim();
-      const type = (item.type || item['Lead Type'] || 'Hot').trim();
-      const associateName = (item.associateName || item.associate || item['Assigned Associate'] || defaultAssociate || 'Vibha').trim();
-      const address = (item.address || item['Address'] || item.city || '').trim();
-      const occupation = (item.occupation || item['Occupation'] || '').trim();
-      const notes = (item.notes || item.remarks || item.remark || item['Notes'] || '').trim();
-
-      validLeads.push({
-        clientName,
-        contact,
-        email,
-        project,
-        budget,
-        status,
-        type,
-        associateName,
-        address,
-        occupation,
-        date: new Date().toISOString().split('T')[0],
-        remarks: notes ? [{ note: notes, date: new Date().toISOString().split('T')[0], updatedBy: importedBy }] : [],
-      });
-    }
-
-    if (validLeads.length === 0) {
-      return { success: false, count: 0, imported: [], skipped };
-    }
-
-    const inserted = await this.prospectModel.insertMany(validLeads);
-    return {
-      success: true,
-      count: inserted.length,
-      imported: inserted,
-      skipped,
-    };
-  }
-
-  async importFromFile(
-    fileBuffer: Buffer,
-    defaultAssociate = 'Vibha',
-    importedBy = 'Admin',
-  ): Promise<{ success: boolean; count: number; imported: any[]; skipped: number }> {
-    const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
-    const firstSheetName = workbook.SheetNames[0];
-    if (!firstSheetName) {
-      throw new BadRequestException('The uploaded Excel or CSV file contains no readable sheets.');
-    }
-    const worksheet = workbook.Sheets[firstSheetName];
-    const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
-    return this.bulkImport(jsonData, defaultAssociate, importedBy);
   }
 }
